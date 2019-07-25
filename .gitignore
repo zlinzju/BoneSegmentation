@@ -1,0 +1,6 @@
+# Directories
+dataset/
+saved_models/*
+
+# Check Points
+.ipynb_checkpoints
