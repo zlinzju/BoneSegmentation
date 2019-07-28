@@ -34,7 +34,6 @@ from keras.models import Model
 from keras.layers import Input,Activation
 from keras.layers import Conv2D,  MaxPooling2D, BatchNormalization, Conv2DTranspose, concatenate
 
-
 from keras.callbacks import ModelCheckpoint, CSVLogger
 
 import keras.backend as K
@@ -466,19 +465,19 @@ class Normalize(object):
        
     def __call__(self, input_image, mask_image):
                
-        image_copy = input_image.copy().astype(np.float)
-        label_copy = mask_image.copy().astype(np.float)
+        input_image_copy = input_image.copy().astype(np.float)
+        mask_image_copy = mask_image.copy().astype(np.float)
         
-        M = np.float(np.max(image))
+        M = np.float(np.max(input_image_copy))
         if M != 0:
-            image_copy  *= 1./M
+            input_image_copy  *= 1./M
             
-        M = np.float(np.max(label))
+        M = np.float(np.max(mask_image_copy))
         if M != 0:
-            label_copy  *= 1./M
+            mask_image_copy  *= 1./M
         
 
-        return ( image_copy, label_copy)   
+        return input_image_copy, mask_image_copy 
 
 ############################################################################################
 # Test Data Augmentation 
@@ -538,6 +537,12 @@ plot_transformation(flip)
 ##########################
 noise = GaussianNoise(prob=1.0)
 plot_transformation(noise)
+
+##########################
+# Normalize Test
+##########################
+normalize = Normalize()
+plot_transformation(normalize)
 
 ############################################################################################
 # Create Dataset
@@ -672,35 +677,45 @@ class UNetLoss():
         y_pred_f = K.flatten(y_pred)
         
         intersection = K.sum(y_true_f * y_pred_f)
-        
-        return (2. * intersection + self.smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + self.smooth)
-
+        coefficient = (2. * intersection + self.smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + self.smooth)
+        loss = 1 - coefficient
+        return loss
+    
 ############################################################################################
 # Training pipeline
 ############################################################################################
 
 # Data augmentation 
-train_transformations = [
-        Resize((512,512),(512,512))
+train_transformations = [         
+        RandomTranslation(ratio=0.2, prob=0.5),
+        RandomScale(lower=0.8,upper=1.2, prob=0.5),
+        RandomFlip(prob=0.5),
+        Resize((512,512),(512,512)),
+        Normalize()
         ]
 
 test_transformations = [
-        Resize((512,512),(512,512))
+        RandomTranslation(ratio=0.2, prob=0.5),
+        RandomScale(lower=0.8,upper=1.2, prob=0.5),
+        RandomFlip(prob=0.5),
+        Resize((512,512),(512,512)),
+        Normalize()
         ]
 
 valid_transformations = [
-        Resize((512,512),(512,512))
+        Resize((512,512),(512,512)),
+        Normalize()
         ]
 
 # Hyperparameters
-epochs = 200
+epochs = 100
 batch_size = 1 # Change this value if you have more GPU Power
 learning_rate = 0.001
 weight_decay = 5e-4
 momentum = .9
 
-train_valid_data, test_data = train_test_split(data, test_size=0.20, random_state=42)
-train_data, valid_data = train_test_split(train_valid_data, test_size=0.25, random_state=42)
+train_data, test_valid_data = train_test_split(data, test_size=0.20, random_state=42)
+test_data, valid_data = train_test_split(test_valid_data, test_size=0.50, random_state=42)
 
 print('Size of train data: {0}'.format(len(train_data)))
 print('Size of test data: {0}'.format(len(test_data)))
@@ -716,13 +731,13 @@ model = UNet()
 model.summary()
 
 # Create loss function
-loss = UNetLoss(smooth = 1)
+loss = UNetLoss()
 
 # Create Optimizer
 optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
 
 # Compile model for training
-model.compile(optimizer, loss = loss.calculate_loss)
+model.compile(optimizer, loss = loss.calculate_loss, metrics=['accuracy'])
 
 # File were the best model will be saved during checkpoint     
 model_file = os.path.join(model_path,'bone_segmentation-{val_loss:.4f}.h5')
@@ -736,3 +751,127 @@ csv_logger = CSVLogger(filename='bone_segmentation.csv',separator=',', append=Tr
 history = model.fit_generator(train_generator,steps_per_epoch=int(len(train_data) / batch_size),
                               validation_data=test_generator,validation_steps=int(len(test_data) / batch_size),
                               epochs=epochs, verbose=1, callbacks=[check_pointer,csv_logger],workers=1)
+
+############################################################################################
+# Predict
+############################################################################################
+
+# If we want to test on a pre trained model use the following line
+model.load_weights(os.path.join(model_path,'bone_segmentation-0.0171.h5'), by_name=False)
+
+n_samples = 5
+
+for i in range(n_samples):
+    
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    f.set_figwidth(14)
+    
+    # randomly select a sample
+    idx = np.random.randint(0, len(valid_data))
+    sample = valid_data[idx]
+    
+    # Read input file
+    input_image_path, bone_mask_image_path = sample
+    
+    input_image = pydicom.read_file(input_image_path).pixel_array 
+    bone_mask_image = pydicom.read_file(bone_mask_image_path).pixel_array 
+    
+    input_image_copy = np.copy(input_image)
+    bone_mask_image_copy = np.copy(bone_mask_image)
+
+    # Apply transformations to input and background image
+    for t in valid_transformations:
+        input_image_copy,bone_mask_image_copy = t(input_image_copy, bone_mask_image_copy)
+            
+    input_image_copy = np.expand_dims(input_image_copy, axis = -1)     
+    bone_mask_image_copy = np.expand_dims(bone_mask_image_copy, axis = -1)  
+    
+    # Predict 
+    bone_mask_pred = model.predict(input_image_copy[np.newaxis,...]) 
+    
+     # Squeeze
+    input_image_copy = np.squeeze(input_image_copy)
+    bone_mask_image_copy = np.squeeze(bone_mask_image_copy)
+    bone_mask_pred = np.squeeze(bone_mask_pred)
+
+    bone_mask_pred[bone_mask_pred > 0.5] = 1
+    bone_mask_pred[bone_mask_pred <= 0.5] = 0
+
+    # Plot 
+    ax1.set_title('Input Image # {0}'.format(idx))
+    ax1.imshow(input_image_copy , cmap='gray')
+    
+    ax2.set_title('True Bone Mask # {0}'.format(idx))
+    ax2.imshow(bone_mask_image_copy, cmap='gray')
+    
+    ax3.set_title('Predicted Bone Mask # {0}'.format(idx))
+    ax3.imshow(bone_mask_pred, cmap='gray')
+  
+    
+hamburg_dataset_folder = os.path.join(dataset_folder, "Hamburg University SIO Database")
+hamburg_dataset_processed_folder = os.path.join(hamburg_dataset_folder,'processed')
+
+hamburg_image_paths = glob.glob(os.path.join(hamburg_dataset_folder,'*.tif')) 
+
+import image
+
+img = mpimg.imread(hamburg_image_paths[113])
+test = plt.imread(hamburg_image_paths[113])
+plt.imshow(test, cmap='gray')
+
+# Apply transformations to input and background image
+test =  cv2.resize(test, (512, 512))
+plt.imshow(test, cmap='gray')
+
+test_copy = test.copy().astype(np.float)
+
+M = np.float(np.max(test))
+if M != 0:
+    test_copy  *= 1./M
+    
+plt.imshow(test_copy, cmap='gray')
+
+test_copy = np.expand_dims(test_copy, axis = -1)  
+test_pred = model.predict(test_copy[np.newaxis,...]) 
+
+test_pred = np.squeeze(test_pred) 
+
+plt.imshow(test_pred, cmap='gray')
+
+max_intensity = -999999
+for sample in data:
+
+    sample_in, sample_gt = sample
+
+    sample_dicom = pydicom.read_file(sample_in)
+
+
+    sample_image = sample_dicom.pixel_array
+    
+    if sample_image.max() >  max_intensity:
+        max_intensity = sample_image.max()
+        
+plt.imread('frozenCT1256.tiff')
+
+# Set outside-of-scan pixels to 1
+# The intercept is usually -1024, so air is approximately 0
+sample_image[sample_image == -2000] = 0
+
+# Convert to Hounsfield units (HU)
+intercept =sample_dicom.RescaleIntercept
+slope = sample_dicom.RescaleSlope
+
+sample_in, sample_gt = data[0]
+
+sample_dicom = pydicom.read_file(sample_in)
+
+sample_image = sample_dicom.pixel_array
+
+scaled_img = cv2.convertScaleAbs(sample_image-np.min(sample_image), alpha=(255.0 / min(np.max(sample_image)-np.min(sample_image), 10000)))
+
+test_copy = sample_image.copy().astype(np.float)
+M = np.float(np.max(sample_image))
+if M != 0:
+    test_copy  *= 1./M
+
+sample_dicom.PhotometricInterpretation 
