@@ -18,6 +18,8 @@ import random
 import glob
 import zipfile
 import shutil 
+import csv
+
 import pydicom
 
 import numpy as np
@@ -78,7 +80,7 @@ def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overw
     print(50*'-')
     
     # Unzip Laled dicom
-    label_dicom_zip_file = os.path.join(database_folder,'LABELLED_DICOM.zip')
+    label_dicom_zip_file = os.path.join(database_folder,'PATIENT_DICOM.zip')
     label_dicom_zip = zipfile.ZipFile(label_dicom_zip_file)
     label_dicom_zip.extractall(database_folder)
     label_dicom_zip.close()
@@ -93,7 +95,7 @@ def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overw
     print(50*'-')
     
     # Folders form input and bone masks dicom
-    label_dicom_folder = os.path.join(database_folder,'LABELLED_DICOM') 
+    label_dicom_folder = os.path.join(database_folder,'PATIENT_DICOM') 
     bone_mask_dicom_folder = os.path.join(database_folder,'MASKS_DICOM','bone') 
     
     # Select all input and mask dicom files
@@ -115,7 +117,7 @@ def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overw
     # Update the current_index with the last file index on the folder
     if(overwrite == False):
         
-        input_dicom_paths = glob.glob(os.path.join(inputs_folder,'*.dicom'))
+        input_dicom_paths = glob.glob(os.path.join(inputs_folder,'*.dcm'))
         
         if(len(input_dicom_paths) == 0):
             current_index = 1
@@ -134,8 +136,8 @@ def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overw
     
         assert(label_dicom_path.split("\\")[-1] == bone_mask_dicom_path.split("\\")[-1])
         
-        new_input_dicom_path = os.path.join(inputs_folder,'input' + str(current_index).zfill(5) + ".dicom")
-        new_bone_mask_dicom_path = os.path.join(bone_masks_folder,'mask' + str(current_index).zfill(5) + ".dicom")
+        new_input_dicom_path = os.path.join(inputs_folder,'input' + str(current_index).zfill(5) + ".dcm")
+        new_bone_mask_dicom_path = os.path.join(bone_masks_folder,'mask' + str(current_index).zfill(5) + ".dcm")
         
         shutil.copy(label_dicom_path, new_input_dicom_path)
         shutil.copy(bone_mask_dicom_path, new_bone_mask_dicom_path)
@@ -151,26 +153,14 @@ def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overw
     print("Database folder excluded")
     print(50*'-')  
             
-
 dataset_folder = 'dataset'
 
 inputs_folder = os.path.join(dataset_folder,'inputs')
 bone_masks_folder = os.path.join(dataset_folder,'bone_masks')
 
-# Create Dataset folder 
-if not os.path.exists(dataset_folder):
-    os.makedirs(dataset_folder)
-    
-# Create Input DICOM folder 
-if not os.path.exists(inputs_folder):
-    os.makedirs(inputs_folder)
-    
-# Create Bone Masks folder
-if not os.path.exists(bone_masks_folder):
-    os.makedirs(bone_masks_folder)
-    
 # Uncomment to process again <!!!!!! REMOVE FOR FINAL PUBLISHING>
-database_urls = ['''
+database_urls = [
+                 '''
                  'https://www.ircad.fr/softwares/3Dircadb/3Dircadb1/3Dircadb1.1.zip',
                  'https://www.ircad.fr/softwares/3Dircadb/3Dircadb1/3Dircadb1.2.zip',
                  'https://www.ircad.fr/softwares/3Dircadb/3Dircadb1/3Dircadb1.3.zip',
@@ -194,6 +184,19 @@ database_urls = ['''
                  '''
                  ]
 
+
+# Create Dataset folder 
+if not os.path.exists(dataset_folder):
+    os.makedirs(dataset_folder)
+    
+# Create Input DICOM folder 
+if not os.path.exists(inputs_folder):
+    os.makedirs(inputs_folder)
+    
+# Create Bone Masks folder
+if not os.path.exists(bone_masks_folder):
+    os.makedirs(bone_masks_folder)
+    
 # The request library hangs sometimes after processing the last request. If that happens you have to start the process
 # again from the dataset that you have stoped
 for database_url in database_urls:
@@ -203,9 +206,35 @@ for database_url in database_urls:
 # Load data
 ############################################################################################
     
+# Load a DICOM file and convert it to [0-255] gray scale    
+# For IRC  Dataset minimum value = -2048 and maximum value = 3247
+def load_dicom(dicom_path):
+    
+    # Load dicom file
+    dicom = pydicom.read_file(dicom_path)
+    
+    # Select only pixel image data
+    pixel_data = dicom.pixel_array 
+
+    intercept = dicom.RescaleIntercept
+    slope = dicom.RescaleSlope
+    
+    # Normalize data using slope and intercept
+    pixel_data = pixel_data * slope +intercept 
+
+    image = np.zeros(pixel_data.shape)
+    
+    # Normalize image from 16 bits int to 8 bits unsigned int (JPG)
+    image = (pixel_data + 65535)
+    image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
+    image[image > 255] = 255
+    image[image < 1] = 0
+          
+    return image.astype('uint8')
+
 # DICOM image files
-input_files = glob.glob(os.path.join(inputs_folder,'*.dicom'))  
-bone_mask_files = glob.glob(os.path.join(bone_masks_folder,'*.dicom'))   
+input_files = glob.glob(os.path.join(inputs_folder,'*.dcm'))  
+bone_mask_files = glob.glob(os.path.join(bone_masks_folder,'*.dcm'))   
 
 # Sort names to avoid connecting wrong numbered files
 input_files.sort()
@@ -219,7 +248,7 @@ for input_image, bone_mask_image in zip(input_files, bone_mask_files):
     
     data.append((input_image,bone_mask_image))
 
-# Plot some samples from training set
+# Plot some samples from dataset
 n_samples = 5
 
 for i in range(n_samples):
@@ -232,8 +261,8 @@ for i in range(n_samples):
     idx = np.random.randint(0, len(data))
     input_image_path, bone_mask_image_path = data[idx]
     
-    input_image = pydicom.read_file(input_image_path).pixel_array
-    bone_mask_image = pydicom.read_file(bone_mask_image_path).pixel_array
+    input_image = load_dicom(input_image_path)
+    bone_mask_image = load_dicom(bone_mask_image_path) 
     
     ax1.imshow(input_image, cmap = 'gray')
     ax1.set_title('Input Image # {0}'.format(idx))
@@ -422,6 +451,58 @@ class RandomFlip(object):
             # Flip image
             mask_image = mask_image[:, ::-1]
             
+            # Random flip horizontally
+            if random.uniform(0, 1) <= 0.5 :
+                
+                input_image = np.flip(input_image)
+                mask_image = np.flip(mask_image)
+            
+            return input_image, mask_image
+        
+        return input_image, mask_image
+
+#############################
+# Change image brightness
+############################# 
+class RandomBrightness():
+    
+    def __init__(self, lower = -25, upper = 25, prob = 0.5):
+
+        self.lower = lower
+        self.upper = upper
+        self.prob = prob
+    
+    def __call__(self, input_image,  mask_image):
+        
+        if random.uniform(0, 1) <= self.prob:
+            
+            amount = int(random.uniform(self.lower, self.upper))
+            
+            input_image = np.clip(input_image + amount, 0, 255).astype("uint8")
+        
+            return input_image, mask_image
+        
+        return input_image, mask_image
+
+#############################
+# Change image contrast
+############################# 
+class RandomContrast():
+    
+    def __init__(self, lower = 0.5, upper = 1.5, prob = 0.5):
+
+        self.lower = lower
+        self.upper = upper
+        self.prob = prob
+    
+    def __call__(self, input_image,  mask_image):
+        
+        if random.uniform(0, 1) <= self.prob:
+            
+            amount = random.uniform(self.lower, self.upper)
+            
+            input_image = np.clip(input_image * amount, 0, 255).astype("uint8")
+        
             return input_image, mask_image
         
         return input_image, mask_image
@@ -431,8 +512,10 @@ class RandomFlip(object):
 #############################    
 class GaussianNoise(object):
     
-    def __init__(self, prob=0.5):
+    def __init__(self,mean=0.0, var=0.1, prob=0.5):
 
+        self.mean = mean
+        self.var = var
         self.prob = prob
     
     def __call__(self, input_image, mask_image):
@@ -442,11 +525,9 @@ class GaussianNoise(object):
              # Get image shape
             h, w = input_image.shape[:2]
             
-            mean = 0
-            var = 0.1
-            sigma = var**0.5
+            sigma = self.var **0.5
             
-            gauss = np.random.normal(mean,sigma,(w,h))
+            gauss = np.random.normal(self.mean,sigma,(w,h))
             gauss = gauss.reshape(w,h)
             
             noise_input_image = input_image + gauss
@@ -464,47 +545,44 @@ class Normalize(object):
     """Normalize the color range to [0,1].""" 
        
     def __call__(self, input_image, mask_image):
-               
-        input_image_copy = input_image.copy().astype(np.float)
-        mask_image_copy = mask_image.copy().astype(np.float)
-        
-        M = np.float(np.max(input_image_copy))
-        if M != 0:
-            input_image_copy  *= 1./M
-            
-        M = np.float(np.max(mask_image_copy))
-        if M != 0:
-            mask_image_copy  *= 1./M
-        
-
-        return input_image_copy, mask_image_copy 
+                    
+        return input_image / 255 , mask_image / 255 
 
 ############################################################################################
 # Test Data Augmentation 
 ############################################################################################
-def plot_transformation(transformation, n_samples = 3):
+def plot_transformation(transformation, n_samples = 3, normalize = False):
 
     for i in range(n_samples):
     
         # define the size of images
-        f, (ax1, ax2) = plt.subplots(1, 2)
-        f.set_figwidth(10)
+        f, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
+        f.set_figwidth(14)
 
         # randomly select a sample
         idx = np.random.randint(0, len(data))
         input_image_path, bone_mask_image_path = data[idx]
     
-        input_image = pydicom.read_file(input_image_path).pixel_array
-        bone_mask_image = pydicom.read_file(bone_mask_image_path).pixel_array
+        input_image = load_dicom(input_image_path)
+        bone_mask_image = load_dicom(bone_mask_image_path)
+        
+        if normalize:
+            norm = Normalize()
+            input_image, bone_mask_image = norm(input_image, bone_mask_image)
 
-        new_input_image, new_gt_image= transformation(input_image, bone_mask_image)
-
-        ax1.imshow(new_input_image , cmap = 'gray')
-        ax1.set_title('Original')
-
-
-        ax2.imshow(new_gt_image , cmap = 'gray')
+        new_input_image, new_bone_mask_image = transformation(input_image, bone_mask_image)
+        
+        ax1.imshow(input_image , cmap = 'gray')
+        ax1.set_title('Original Input')
+        
+        ax2.imshow(new_input_image , cmap = 'gray')
         ax2.set_title(type(transformation).__name__)
+
+        ax3.imshow(bone_mask_image , cmap = 'gray')
+        ax3.set_title('Original Bone Mask')
+        
+        ax4.imshow(new_bone_mask_image , cmap = 'gray')
+        ax4.set_title(type(transformation).__name__)
 
         plt.show()
         
@@ -529,14 +607,26 @@ plot_transformation(scale)
 ##########################
 # Random Flip Test
 ##########################
-flip = RandomFlip()
+flip = RandomFlip(prob=1.0)
 plot_transformation(flip)
+
+##########################
+# Random Brightness Test
+##########################
+bright = RandomBrightness(prob=1.0)
+plot_transformation(bright)
+
+##########################
+# Random Contrast Test
+##########################
+contrast = RandomContrast(prob=1.0)
+plot_transformation(contrast)
 
 ##########################
 # Random Flip Test
 ##########################
-noise = GaussianNoise(prob=1.0)
-plot_transformation(noise)
+noise = GaussianNoise(mean=0.0, var=0.001, prob=1.0)
+plot_transformation(noise, normalize = True)
 
 ##########################
 # Normalize Test
@@ -553,8 +643,8 @@ def createXy(data, transformations = None):
     
     input_image_path, bone_mask_image_path = data
     
-    input_image = pydicom.read_file(input_image_path).pixel_array 
-    bone_mask_image = pydicom.read_file(bone_mask_image_path).pixel_array 
+    input_image = load_dicom(input_image_path) 
+    bone_mask_image = load_dicom(bone_mask_image_path) 
     
     # Apply transformations for the tuple (image, labels, boxes)
     if transformations:
@@ -686,7 +776,9 @@ class UNetLoss():
 ############################################################################################
 
 # Data augmentation 
-train_transformations = [         
+train_transformations = [ 
+        RandomBrightness(prob=0.5),
+        RandomContrast(prob=0.5),
         RandomTranslation(ratio=0.2, prob=0.5),
         RandomScale(lower=0.8,upper=1.2, prob=0.5),
         RandomFlip(prob=0.5),
@@ -695,6 +787,8 @@ train_transformations = [
         ]
 
 test_transformations = [
+        RandomBrightness(prob=0.5),
+        RandomContrast(prob=0.5),
         RandomTranslation(ratio=0.2, prob=0.5),
         RandomScale(lower=0.8,upper=1.2, prob=0.5),
         RandomFlip(prob=0.5),
@@ -757,7 +851,7 @@ history = model.fit_generator(train_generator,steps_per_epoch=int(len(train_data
 ############################################################################################
 
 # If we want to test on a pre trained model use the following line
-model.load_weights(os.path.join(model_path,'bone_segmentation-0.0171.h5'), by_name=False)
+model.load_weights(os.path.join(model_path,'bone_segmentation-0.0762.h5'), by_name=False)
 
 n_samples = 5
 
@@ -773,8 +867,8 @@ for i in range(n_samples):
     # Read input file
     input_image_path, bone_mask_image_path = sample
     
-    input_image = pydicom.read_file(input_image_path).pixel_array 
-    bone_mask_image = pydicom.read_file(bone_mask_image_path).pixel_array 
+    input_image = load_dicom(input_image_path) 
+    bone_mask_image = load_dicom(bone_mask_image_path) 
     
     input_image_copy = np.copy(input_image)
     bone_mask_image_copy = np.copy(bone_mask_image)
@@ -807,16 +901,238 @@ for i in range(n_samples):
     ax3.set_title('Predicted Bone Mask # {0}'.format(idx))
     ax3.imshow(bone_mask_pred, cmap='gray')
   
+############################################################################################
+# Evaluate our model
+############################################################################################
+
+measures = np.zeros((len(data),11))
+statistics = []
     
+for i, sample in enumerate(data):
+    
+    # Retrieve tuple
+    input_image_path, bone_mask_image_path= sample
+    
+    print("input: {0} , gt: {1}".format(input_image_path.split("\\")[-1], bone_mask_image_path.split("\\")[-1]))
+    
+    # Read input file
+    input_image = load_dicom(input_image_path) 
+    bone_mask_image = load_dicom(bone_mask_image_path) 
+    
+    # Make a copy for safety
+    input_image_copy = np.copy(input_image)
+    bone_mask_image_copy = np.copy(bone_mask_image)
+    
+    # Apply transformations to input and background image. This time we will not use the ground truth image 
+    # in the transformation step since we want to evaluate against the original data excluding the mask
+    # Apply transformations to input and background image
+    for t in valid_transformations:
+        input_image_copy,bone_mask_image_copy = t(input_image_copy, bone_mask_image_copy)
+
+    # Correct single dimensions
+    input_image_copy = np.expand_dims(input_image_copy, axis = -1)     
+    bone_mask_image_copy = np.expand_dims(bone_mask_image_copy, axis = -1)  
+    
+    # Predict 
+    bone_mask_pred = model.predict(input_image_copy[np.newaxis,...]) 
+    
+     # Squeeze
+    input_image_copy = np.squeeze(input_image_copy)
+    y_true = np.squeeze(bone_mask_image_copy)
+    y_pred = np.squeeze(bone_mask_pred)
+
+    y_pred[y_pred > 0.5] = 1
+    y_pred[y_pred <= 0.5] = 0
+        
+    # Calculate True Positive, True Negative, False Positive, False Negative
+    TP = np.sum(np.logical_and(y_pred == 1, y_true == 1))
+    TN = np.sum(np.logical_and(y_pred == 0, y_true == 0))
+    FP = np.sum(np.logical_and(y_pred == 1, y_true == 0))
+    FN = np.sum(np.logical_and(y_pred == 0, y_true == 1))
+
+    # Calculate Recall
+    recall = TP / (TP + FN)
+    
+    # Calculate Precision
+    precision =  TP / (TP + FP)
+    
+    # Calculate Recall
+    Dice = 2 * TP / (2 * TP + FP + FN)
+    
+    # Calculate Specificity
+    Jaccard = Dice / (2 - Dice)
+
+    # Calculate False Positive Rate
+    FPR =  FP / (FP + TN)
+    
+    # Calculate False Negative Rate
+    FNR = FN / (TP + FN)
+    
+    # Calculate Percentage of Wrong Classifications
+    PWC =  100 * (FN + FP) / (TP + FN + FP + TN)
+
+    stats = { 'input_image': input_image_path,
+              'bone_mask_image' : bone_mask_image,
+              'TP' : TP,
+              'TN' : TN,
+              'FP' : FP,
+              'FN' : FN,
+              'recall' : recall,
+              'precision' : precision,
+              'FPR' : FPR,
+              'FNR' : FNR,
+              'PWC' : PWC,
+              'Jaccard' : Jaccard,
+              'Dice' : Dice
+            }
+    
+    statistics.append(stats)
+    
+    measures[i][0] = TP
+    measures[i][1] = TN
+    measures[i][2] = FP
+    measures[i][3] = FN
+    measures[i][4] = recall
+    measures[i][5] = precision
+    measures[i][6] = FPR
+    measures[i][7] = FNR
+    measures[i][8] = PWC
+    measures[i][9] = Jaccard
+    measures[i][10] = Dice
+
+# Replace NaN by zeros
+measures[np.isnan(measures)] = 0
+
+# Calculate Mean Average for all our statistics
+mean_score = measures.mean(axis=0)
+max_score = measures.max(axis=0)
+min_score = measures.min(axis=0)
+
+# Print Average Statistics
+print(50*'-')
+print('Recal: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[4],max_score[4],min_score[4]))
+print(50*'-')
+print('Precision: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[5],max_score[5],min_score[5]))
+print(50*'-')
+print('False Positive Rate: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[6],max_score[6],min_score[6]))
+print(50*'-')
+print('Calculate False Negative Rate: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[7],max_score[7],min_score[7]))
+print(50*'-')
+print('Percentage of Wrong Classifications: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[8],max_score[8],min_score[8]))
+print(50*'-')
+print('Jaccard: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[9],max_score[9],min_score[9]))
+print(50*'-')
+print('Dice: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[10],max_score[10],min_score[10]))
+print(50*'-')
+
+# Create Confusion Matrix
+cm = np.zeros((2,2))
+cm[0][0] = mean_score[0]
+cm[0][1] = mean_score[2]
+cm[1][0] = mean_score[3]
+cm[1][1] = mean_score[1]
+
+print(50*'-')
+print('Confusion Matrix')
+plt.matshow(cm)
+plt.colorbar()
+print(50*'-')
+
+# Save results on a file
+results_folder = 'results'
+
+# Create Dataset folder 
+if not os.path.exists(results_folder):
+    os.makedirs(results_folder)
+    
+csv_columns = ['input_image','gt_image','TP','TN','FP','FN','recall','precision','FPR','FNR','PWC','Jaccard','Dice']
+
+csv_file = os.path.join(results_folder, 'bone_segmentation_stats.csv')
+
+try:
+    with open(csv_file, 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_columns, lineterminator = '\n')
+        writer.writeheader()
+        for data in statistics:
+            writer.writerow(data)
+except IOError:
+    print("I/O error") 
+
+
+mesh_trainsformations = [Resize((512,512),(512,512)), Normalize()]
+ 
+originals = []
+masks = []    
+    
+for i in range(129):
+
+    input_image_path, bone_mask_image_path = data[i]    
+    
+    input_image = load_dicom(input_image_path) 
+    bone_mask_image = load_dicom(bone_mask_image_path) 
+    
+    input_image_copy = np.copy(input_image)
+    bone_mask_image_copy = np.copy(bone_mask_image)
+    
+    # Apply transformations to input and background image
+    for t in mesh_trainsformations:
+        input_image_copy,bone_mask_image_copy = t(input_image_copy, bone_mask_image_copy)
+            
+    input_image_copy = np.expand_dims(input_image_copy, axis = -1)     
+    bone_mask_image_copy = np.expand_dims(bone_mask_image_copy, axis = -1)  
+    
+    # Predict 
+    bone_mask_pred = model.predict(input_image_copy[np.newaxis,...]) 
+    
+     # Squeeze
+    input_image_copy = np.squeeze(input_image_copy)
+    bone_mask_image_copy = np.squeeze(bone_mask_image_copy)
+    bone_mask_pred = np.squeeze(bone_mask_pred)
+
+    bone_mask_pred[bone_mask_pred > 0.5] = 1
+    bone_mask_pred[bone_mask_pred <= 0.5] = 0
+    
+    masks.append(bone_mask_pred)
+    originals.append(input_image_copy)
+    
+    
+originals_array = np.asarray(originals)  
+masks_array =np.asarray(masks) 
+
+originals_array_8 = originals_array * 255
+masks_array_8 = masks_array.astype('uint8') * 255
+
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from skimage import measure
+
+threshold=0
+p = originals_array_8.transpose((2,1,0))
+verts, faces, normals, values = measure.marching_cubes_lewiner(p, threshold)
+fig = plt.figure(figsize=(10, 10))
+ax = fig.add_subplot(111, projection='3d')
+mesh = Poly3DCollection(verts[faces], alpha=0.4)
+face_color = [0.5, 0.5, 1]
+mesh.set_facecolor(face_color)
+ax.add_collection3d(mesh)
+ax.set_xlim(0, p.shape[0])
+ax.set_ylim(0, p.shape[1])
+ax.set_zlim(0, p.shape[2])
+
+plt.show()
+
+
+
+
+
+
 hamburg_dataset_folder = os.path.join(dataset_folder, "Hamburg University SIO Database")
 hamburg_dataset_processed_folder = os.path.join(hamburg_dataset_folder,'processed')
 
 hamburg_image_paths = glob.glob(os.path.join(hamburg_dataset_folder,'*.tif')) 
 
-import image
 
-img = mpimg.imread(hamburg_image_paths[113])
-test = plt.imread(hamburg_image_paths[113])
+img = cv2.imread(hamburg_image_paths[12], flags=cv2.IMREAD_UNCHANGED)
+test = plt.imread(hamburg_image_paths[12])
 plt.imshow(test, cmap='gray')
 
 # Apply transformations to input and background image
@@ -830,6 +1146,8 @@ if M != 0:
     test_copy  *= 1./M
     
 plt.imshow(test_copy, cmap='gray')
+
+test_copy = np.flip(test_copy)
 
 test_copy = np.expand_dims(test_copy, axis = -1)  
 test_pred = model.predict(test_copy[np.newaxis,...]) 
@@ -853,25 +1171,9 @@ for sample in data:
         
 plt.imread('frozenCT1256.tiff')
 
-# Set outside-of-scan pixels to 1
-# The intercept is usually -1024, so air is approximately 0
-sample_image[sample_image == -2000] = 0
 
 # Convert to Hounsfield units (HU)
-intercept =sample_dicom.RescaleIntercept
-slope = sample_dicom.RescaleSlope
 
-sample_in, sample_gt = data[0]
 
-sample_dicom = pydicom.read_file(sample_in)
 
-sample_image = sample_dicom.pixel_array
-
-scaled_img = cv2.convertScaleAbs(sample_image-np.min(sample_image), alpha=(255.0 / min(np.max(sample_image)-np.min(sample_image), 10000)))
-
-test_copy = sample_image.copy().astype(np.float)
-M = np.float(np.max(sample_image))
-if M != 0:
-    test_copy  *= 1./M
-
-sample_dicom.PhotometricInterpretation 
+i
