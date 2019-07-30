@@ -4,8 +4,18 @@ Created on Wed Jul 24 09:55:54 2019
 
 @author: Angelo Antonio Manzatto
 
-Reference: https://www.ircad.fr/research/3d-ircadb-01/
+UNet paper: https://arxiv.org/pdf/1505.04597.pdf. 
+
+This project was made using the IRCAD database
+
+References:
+    
+https://www.ircad.fr/research/3d-ircadb-01/
 3D IRCAD - Hôpitaux Universitaires
+
+VOXEL-Man:
+https://www.voxel-man.com/segmented-inner-organs-of-the-visible-human/
+
 """
 
 ##################################################################################
@@ -45,6 +55,12 @@ from keras.optimizers import Adam
 ##################################################################################
 # Download Dataset
 ##################################################################################  
+
+'''
+This method is responsable for downloading and processing all the IRCAD datasets needed to train our model and
+should be executed only once.
+
+'''
 def process_ircad_database(database_url, inputs_folder, bone_masks_folder, overwrite=False):
     
     # Database name will be assumed as the name on the last "/" before the ".zip"
@@ -184,7 +200,6 @@ database_urls = [
                  '''
                  ]
 
-
 # Create Dataset folder 
 if not os.path.exists(dataset_folder):
     os.makedirs(dataset_folder)
@@ -216,10 +231,10 @@ def load_dicom(dicom_path):
     # Select only pixel image data
     pixel_data = dicom.pixel_array 
 
+    # Normalize data using slope and interceptallow to transform the pixel values to Hounsfield Units    
     intercept = dicom.RescaleIntercept
     slope = dicom.RescaleSlope
     
-    # Normalize data using slope and intercept
     pixel_data = pixel_data * slope +intercept 
 
     image = np.zeros(pixel_data.shape)
@@ -599,7 +614,7 @@ translation = RandomTranslation(ratio = 0.2, prob=1.0)
 plot_transformation(translation)
 
 ##########################
-# Random Translation
+# Random Scale
 ##########################
 scale = RandomScale(prob=1.0)
 plot_transformation(scale)
@@ -623,7 +638,7 @@ contrast = RandomContrast(prob=1.0)
 plot_transformation(contrast)
 
 ##########################
-# Random Flip Test
+# Gaussian Noise Test
 ##########################
 noise = GaussianNoise(mean=0.0, var=0.001, prob=1.0)
 plot_transformation(noise, normalize = True)
@@ -797,6 +812,11 @@ test_transformations = [
         ]
 
 valid_transformations = [
+        RandomBrightness(prob=0.5),
+        RandomContrast(prob=0.5),
+        RandomTranslation(ratio=0.2, prob=0.5),
+        RandomScale(lower=0.8,upper=1.2, prob=0.5),
+        RandomFlip(prob=0.5),
         Resize((512,512),(512,512)),
         Normalize()
         ]
@@ -851,7 +871,7 @@ history = model.fit_generator(train_generator,steps_per_epoch=int(len(train_data
 ############################################################################################
 
 # If we want to test on a pre trained model use the following line
-model.load_weights(os.path.join(model_path,'bone_segmentation-0.0762.h5'), by_name=False)
+# model.load_weights(os.path.join(model_path,'<path to model.h5>'), by_name=False)
 
 n_samples = 5
 
@@ -940,9 +960,13 @@ for i, sample in enumerate(data):
     input_image_copy = np.squeeze(input_image_copy)
     y_true = np.squeeze(bone_mask_image_copy)
     y_pred = np.squeeze(bone_mask_pred)
-
+    
     y_pred[y_pred > 0.5] = 1
     y_pred[y_pred <= 0.5] = 0
+    
+    plt.imsave('dataset\\processed\\inputs\\' + input_image_path.split("\\")[-1].split('.')[0] + ".jpg" , input_image_copy, cmap='gray')
+    plt.imsave('dataset\\processed\\masks\\' + bone_mask_image_path.split("\\")[-1].split('.')[0] + ".jpg" , y_true, cmap='gray')
+    plt.imsave('dataset\\processed\\preds\\' + bone_mask_image_path.split("\\")[-1].split('.')[0] + ".jpg" , y_pred, cmap='gray')
         
     # Calculate True Positive, True Negative, False Positive, False Negative
     TP = np.sum(np.logical_and(y_pred == 1, y_true == 1))
@@ -972,7 +996,7 @@ for i, sample in enumerate(data):
     PWC =  100 * (FN + FP) / (TP + FN + FP + TN)
 
     stats = { 'input_image': input_image_path,
-              'bone_mask_image' : bone_mask_image,
+              'bone_mask_image' : bone_mask_image_path,
               'TP' : TP,
               'TN' : TN,
               'FP' : FP,
@@ -1045,7 +1069,7 @@ results_folder = 'results'
 if not os.path.exists(results_folder):
     os.makedirs(results_folder)
     
-csv_columns = ['input_image','gt_image','TP','TN','FP','FN','recall','precision','FPR','FNR','PWC','Jaccard','Dice']
+csv_columns = ['input_image','bone_mask_image','TP','TN','FP','FN','recall','precision','FPR','FNR','PWC','Jaccard','Dice']
 
 csv_file = os.path.join(results_folder, 'bone_segmentation_stats.csv')
 
@@ -1058,122 +1082,7 @@ try:
 except IOError:
     print("I/O error") 
 
-
-mesh_trainsformations = [Resize((512,512),(512,512)), Normalize()]
- 
-originals = []
-masks = []    
-    
-for i in range(129):
-
-    input_image_path, bone_mask_image_path = data[i]    
-    
-    input_image = load_dicom(input_image_path) 
-    bone_mask_image = load_dicom(bone_mask_image_path) 
-    
-    input_image_copy = np.copy(input_image)
-    bone_mask_image_copy = np.copy(bone_mask_image)
-    
-    # Apply transformations to input and background image
-    for t in mesh_trainsformations:
-        input_image_copy,bone_mask_image_copy = t(input_image_copy, bone_mask_image_copy)
-            
-    input_image_copy = np.expand_dims(input_image_copy, axis = -1)     
-    bone_mask_image_copy = np.expand_dims(bone_mask_image_copy, axis = -1)  
-    
-    # Predict 
-    bone_mask_pred = model.predict(input_image_copy[np.newaxis,...]) 
-    
-     # Squeeze
-    input_image_copy = np.squeeze(input_image_copy)
-    bone_mask_image_copy = np.squeeze(bone_mask_image_copy)
-    bone_mask_pred = np.squeeze(bone_mask_pred)
-
-    bone_mask_pred[bone_mask_pred > 0.5] = 1
-    bone_mask_pred[bone_mask_pred <= 0.5] = 0
-    
-    masks.append(bone_mask_pred)
-    originals.append(input_image_copy)
-    
-    
-originals_array = np.asarray(originals)  
-masks_array =np.asarray(masks) 
-
-originals_array_8 = originals_array * 255
-masks_array_8 = masks_array.astype('uint8') * 255
-
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from skimage import measure
-
-threshold=0
-p = originals_array_8.transpose((2,1,0))
-verts, faces, normals, values = measure.marching_cubes_lewiner(p, threshold)
-fig = plt.figure(figsize=(10, 10))
-ax = fig.add_subplot(111, projection='3d')
-mesh = Poly3DCollection(verts[faces], alpha=0.4)
-face_color = [0.5, 0.5, 1]
-mesh.set_facecolor(face_color)
-ax.add_collection3d(mesh)
-ax.set_xlim(0, p.shape[0])
-ax.set_ylim(0, p.shape[1])
-ax.set_zlim(0, p.shape[2])
-
-plt.show()
-
-
-
-
-
-
-hamburg_dataset_folder = os.path.join(dataset_folder, "Hamburg University SIO Database")
-hamburg_dataset_processed_folder = os.path.join(hamburg_dataset_folder,'processed')
-
-hamburg_image_paths = glob.glob(os.path.join(hamburg_dataset_folder,'*.tif')) 
-
-
-img = cv2.imread(hamburg_image_paths[12], flags=cv2.IMREAD_UNCHANGED)
-test = plt.imread(hamburg_image_paths[12])
-plt.imshow(test, cmap='gray')
-
-# Apply transformations to input and background image
-test =  cv2.resize(test, (512, 512))
-plt.imshow(test, cmap='gray')
-
-test_copy = test.copy().astype(np.float)
-
-M = np.float(np.max(test))
-if M != 0:
-    test_copy  *= 1./M
-    
-plt.imshow(test_copy, cmap='gray')
-
-test_copy = np.flip(test_copy)
-
-test_copy = np.expand_dims(test_copy, axis = -1)  
-test_pred = model.predict(test_copy[np.newaxis,...]) 
-
-test_pred = np.squeeze(test_pred) 
-
-plt.imshow(test_pred, cmap='gray')
-
-max_intensity = -999999
-for sample in data:
-
-    sample_in, sample_gt = sample
-
-    sample_dicom = pydicom.read_file(sample_in)
-
-
-    sample_image = sample_dicom.pixel_array
-    
-    if sample_image.max() >  max_intensity:
-        max_intensity = sample_image.max()
-        
-plt.imread('frozenCT1256.tiff')
-
-
-# Convert to Hounsfield units (HU)
-
-
-
-i
+############################################################################################
+# Test  model on Segmented Inner Organs of the Visible Human
+# Reference: https://www.voxel-man.com/segmented-inner-organs-of-the-visible-human/
+############################################################################################
